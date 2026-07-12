@@ -1,0 +1,9 @@
+# Don't commit local sample beats by default (large / possibly copyrighted).
+# Commit one deliberately with `git add -f` if you want CI to have a fixture.
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.ogg
+*.flac
+!README.md

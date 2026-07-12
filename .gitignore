@@ -1,0 +1,17 @@
+node_modules
+dist
+*.local
+.DS_Store
+public/ffmpeg
+*.tsbuildinfo
+
+# Local-only working files (not part of the project)
+.omo
+clips-originals-backup
+
+# Playwright
+/test-results
+/playwright-report
+/blob-report
+/playwright/.cache
+.playwright-mcp
