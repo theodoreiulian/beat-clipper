@@ -1,4 +1,3 @@
-import { analyze } from 'web-audio-beat-detector'
 import type { BeatInfo } from '../types'
 import { getAudioContext } from './metronome'
 
@@ -146,6 +145,45 @@ function refineTempo(env: OnsetEnvelope, seedBpm: number): number {
 }
 
 /**
+ * A drawable summary of a waveform: min/max per column, plus the duration.
+ *
+ * This exists so the decoded AudioBuffer can be thrown away as soon as analysis
+ * is done. A 3-minute stereo track decodes to ~60MB of Float32, and holding it
+ * for the whole session just to redraw a 300px waveform is the single largest
+ * allocation the app makes. A few thousand floats draw the same picture.
+ */
+export interface WavePeaks {
+  min: Float32Array
+  max: Float32Array
+  duration: number
+}
+
+/** Resolution to summarise at: finer than any realistic canvas width. */
+const PEAK_COLUMNS = 1600
+
+export function extractPeaks(buffer: AudioBuffer, columns = PEAK_COLUMNS): WavePeaks {
+  const data = buffer.getChannelData(0)
+  const cols = Math.max(1, Math.min(columns, data.length))
+  const min = new Float32Array(cols)
+  const max = new Float32Array(cols)
+  const perCol = data.length / cols
+  for (let x = 0; x < cols; x += 1) {
+    const start = Math.floor(x * perCol)
+    const end = Math.min(data.length, Math.floor((x + 1) * perCol))
+    let lo = 0
+    let hi = 0
+    for (let i = start; i < end; i += 1) {
+      const v = data[i]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+    min[x] = lo
+    max[x] = hi
+  }
+  return { min, max, duration: buffer.duration }
+}
+
+/**
  * The time of the first audible sample: the moment the file stops being silent,
  * however quiet the sound is. Returns 0 for an all-silent buffer.
  */
@@ -163,7 +201,8 @@ export function findSoundStart(buffer: AudioBuffer): number {
 
 export interface BeatAnalysis extends BeatInfo {
   buffer: AudioBuffer
-  envelope: OnsetEnvelope
+  /** null when the tempo came from the filename and no analysis was needed. */
+  envelope: OnsetEnvelope | null
 }
 
 /**
@@ -181,8 +220,19 @@ export interface BeatAnalysis extends BeatInfo {
  */
 export async function detectBeat(file: File): Promise<BeatAnalysis> {
   const buffer = await decodeAudio(file)
-  const envelope = computeOnsetEnvelope(buffer)
   const fromName = parseBpmFromName(file.name)
-  const bpm = fromName ?? refineTempo(envelope, await analyze(buffer, TEMPO_SETTINGS))
+
+  // A filename BPM wins outright, so do no analysis at all in that case. Both
+  // steps below are full-buffer passes over millions of samples, and
+  // web-audio-beat-detector drags in standardized-audio-context — by far the
+  // heaviest dependency in the app. Importing it here keeps it out of the
+  // initial bundle entirely, so a correctly named beat never pays for it.
+  if (fromName != null) {
+    return { bpm: fromName, onsetSeconds: findSoundStart(buffer), buffer, envelope: null }
+  }
+
+  const envelope = computeOnsetEnvelope(buffer)
+  const { analyze } = await import('web-audio-beat-detector')
+  const bpm = refineTempo(envelope, await analyze(buffer, TEMPO_SETTINGS))
   return { bpm, onsetSeconds: findSoundStart(buffer), buffer, envelope }
 }

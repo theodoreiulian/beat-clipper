@@ -47,6 +47,18 @@ export function setProgressHandler(
   progressHandler = cb
 }
 
+// There is one FFmpeg instance, one virtual FS and one progress handler, so two
+// jobs must never interleave — a preview rebuild triggered by a clip swap can
+// otherwise land in the middle of a full-res export and corrupt both.
+let queue: Promise<unknown> = Promise.resolve()
+
+/** Run `fn` with exclusive use of the ffmpeg instance, queued behind any other job. */
+export function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queue.then(fn, fn)
+  queue = run.catch(() => {})
+  return run
+}
+
 /** Load the ffmpeg.wasm engine once and reuse it across renders. */
 export function getFFmpeg(): Promise<FFmpeg> {
   if (instance) return Promise.resolve(instance)

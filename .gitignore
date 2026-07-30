@@ -9,6 +9,9 @@ public/ffmpeg
 .omo
 clips-originals-backup
 
+# Clips deleted through the Library tab are moved here, not erased
+public/clips/_trash
+
 # Playwright
 /test-results
 /playwright-report

@@ -1,19 +1,40 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Clip, OutputLength } from '../types'
 import { loadLibrary } from '../lib/manifest'
-import { detectBeat } from '../lib/bpm'
-import { renderVideo } from '../lib/render'
+import { detectBeat, extractPeaks, type WavePeaks } from '../lib/bpm'
+import {
+  outputWindow,
+  planRender,
+  renderPreview,
+  renderSegments,
+  resetPreviewCache,
+  snapToBar,
+  type Segment,
+} from '../lib/render'
+import { formatClock } from '../lib/format'
+import { BeatTransport } from '../components/BeatTransport'
 import { DropZone } from '../components/DropZone'
-import { VideoPreview } from '../components/VideoPreview'
-import { Waveform } from '../components/Waveform'
+import { SequenceEditor } from '../components/SequenceEditor'
 
 type Phase = 'idle' | 'detecting' | 'ready' | 'rendering' | 'done' | 'error'
 
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
+/** Matches PREVIEW_W/PREVIEW_H in render.ts; shown so the size isn't a surprise. */
+const PREVIEW_LABEL = '540 × 720'
+
+/** Everything the editor needs about the render that produced the current cut list. */
+interface EditState {
+  segments: Segment[]
+  original: Segment[]
+  library: Clip[]
+  durations: Map<string, number>
+  outLen: number
+  /** Where in the beat this cut list starts; every re-encode of it must match. */
+  audioStart: number
+  beatBpm: number
+  /** Sequence the downloadable full-res file was rendered from, or null if none
+   *  has been rendered yet. Compared by identity to spot edits since the export. */
+  exported: Segment[] | null
 }
 
 /** Numeric readout whose digits roll into place like a hardware counter. */
@@ -51,37 +72,72 @@ function RollingValue({ value }: { value: string }) {
 export function GeneratorPage() {
   const [clips, setClips] = useState<Clip[]>([])
   const [beat, setBeat] = useState<File | null>(null)
-  const [buffer, setBuffer] = useState<AudioBuffer | null>(null)
+  // Only the drawable summary is kept; the decoded AudioBuffer (tens of MB for a
+  // full track) is released as soon as detection is done.
+  const [peaks, setPeaks] = useState<WavePeaks | null>(null)
   const [bpm, setBpm] = useState<number | null>(null)
   const [bpmInput, setBpmInput] = useState('')
   const [onset, setOnset] = useState<number>(0)
+  // Where in the beat the render starts. Always a bar line (or 0, the head of
+  // the file), so the edit's first cut lands on the music wherever it begins.
+  const [startAt, setStartAt] = useState(0)
   const [length, setLength] = useState<OutputLength>(30)
   const [phase, setPhase] = useState<Phase>('idle')
   const [progress, setProgress] = useState(0)
-  const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [warning, setWarning] = useState<string | null>(null)
+  const [edit, setEdit] = useState<EditState | null>(null)
+
+  // The editor always plays this; it is rebuilt (cheaply) after every edit.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [rebuilding, setRebuilding] = useState(false)
+  const [rebuildProgress, setRebuildProgress] = useState(0)
+  // The full-size file, produced only on demand.
+  const [exportUrl, setExportUrl] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
 
   useEffect(() => {
     loadLibrary({ includeUntagged: false }).then(setClips)
   }, [])
 
+  // Blob URLs would otherwise be held for the life of the tab, and an editing
+  // session produces one preview per edit.
+  const previewRef = useRef<string | null>(null)
+  const exportRef = useRef<string | null>(null)
+  function publishPreview(url: string | null) {
+    if (previewRef.current) URL.revokeObjectURL(previewRef.current)
+    previewRef.current = url
+    setPreviewUrl(url)
+  }
+  function publishExport(url: string | null) {
+    if (exportRef.current) URL.revokeObjectURL(exportRef.current)
+    exportRef.current = url
+    setExportUrl(url)
+  }
+  useEffect(() => () => {
+    if (previewRef.current) URL.revokeObjectURL(previewRef.current)
+    if (exportRef.current) URL.revokeObjectURL(exportRef.current)
+  }, [])
+
   async function handleBeat(files: File[]) {
     const file = files[0]
     setBeat(file)
-    setResultUrl(null)
+    publishPreview(null)
+    publishExport(null)
+    setEdit(null)
     setError(null)
     setWarning(null)
+    setStartAt(0)
     setPhase('detecting')
     try {
       const beatInfo = await detectBeat(file)
-      setBuffer(beatInfo.buffer)
+      setPeaks(extractPeaks(beatInfo.buffer))
       setBpm(beatInfo.bpm)
       setBpmInput(beatInfo.bpm.toFixed(2))
       setOnset(beatInfo.onsetSeconds)
       setPhase('ready')
     } catch {
-      setBuffer(null)
+      setPeaks(null)
       setBpm(120)
       setBpmInput('120')
       setOnset(0)
@@ -98,19 +154,50 @@ export function GeneratorPage() {
     setBpm(value)
   }
 
+  // Seconds of beat the render will cover — the lit band on the waveform, and
+  // exactly what planRender will work out for itself when Generate is pressed.
+  const windowLen = peaks ? outputWindow(peaks.duration, startAt, length) : 0
+
+  // Re-spacing the grid moves every bar line, so a start point picked on the old
+  // grid has to be re-snapped onto the new one or the render would open off-beat.
+  useEffect(() => {
+    if (!peaks || bpm == null || bpm < 40) return
+    setStartAt((s) => (s <= 0 ? 0 : snapToBar(s, onset, bpm, peaks.duration)))
+  }, [bpm, onset, peaks])
+
   async function handleGenerate() {
     if (!beat || bpm == null) return
     setPhase('rendering')
     setProgress(0)
     setError(null)
     setWarning(null)
+    publishExport(null)
     try {
-      const result = await renderVideo(clips, beat, bpm, length, onset, (r) =>
-        setProgress(Math.round(r * 100)),
+      // Plan the cut list, then build the editor's preview of it. The preview is
+      // a real MP4 assembled from per-cut encodes, so later edits only re-encode
+      // the cut that changed.
+      const plan = await planRender(clips, beat, bpm, length, onset, startAt)
+      await resetPreviewCache()
+      const { url } = await renderPreview(
+        plan.segments,
+        beat,
+        plan.outLen,
+        plan.audioStart,
+        (r) => setProgress(Math.round(r * 100)),
       )
-      setResultUrl(result.url)
-      if (result.skipped > 0) {
-        const s = result.skipped
+      publishPreview(url)
+      setEdit({
+        segments: plan.segments,
+        original: plan.segments,
+        exported: null,
+        library: plan.playable,
+        durations: plan.durations,
+        outLen: plan.outLen,
+        audioStart: plan.audioStart,
+        beatBpm: bpm,
+      })
+      if (plan.skipped > 0) {
+        const s = plan.skipped
         setWarning(`${s} clip${s > 1 ? 's' : ''} couldn't be read and ${s > 1 ? 'were' : 'was'} skipped.`)
       }
       setPhase('done')
@@ -119,6 +206,70 @@ export function GeneratorPage() {
       setPhase('error')
     }
   }
+
+  // Rebuilds are coalesced: swapping three clips quickly runs one rebuild, then
+  // one more for whatever the sequence ended up as, rather than three in a row.
+  const rebuild = useRef<{ running: boolean; pending: Segment[] | null }>({
+    running: false,
+    pending: null,
+  })
+
+  async function rebuildPreview(segments: Segment[], outLen: number, audioStart: number) {
+    if (!beat) return
+    if (rebuild.current.running) {
+      rebuild.current.pending = segments
+      return
+    }
+    rebuild.current.running = true
+    setRebuilding(true)
+    setError(null)
+    try {
+      let next: Segment[] | null = segments
+      while (next) {
+        rebuild.current.pending = null
+        setRebuildProgress(0)
+        const { url } = await renderPreview(next, beat, outLen, audioStart, (r) =>
+          setRebuildProgress(Math.round(r * 100)),
+        )
+        publishPreview(url)
+        next = rebuild.current.pending
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Preview failed')
+    } finally {
+      rebuild.current.running = false
+      setRebuilding(false)
+    }
+  }
+
+  function handleSegmentsChange(segments: Segment[]) {
+    setEdit((prev) => (prev ? { ...prev, segments } : prev))
+    if (edit) void rebuildPreview(segments, edit.outLen, edit.audioStart)
+  }
+
+  async function handleExport() {
+    if (!beat || !edit) return
+    // Snapshot what we're encoding: the user can keep editing while ffmpeg runs,
+    // and only *this* sequence is the one the resulting MP4 contains.
+    const encoded = edit.segments
+    setExporting(true)
+    setProgress(0)
+    setError(null)
+    try {
+      const { url } = await renderSegments(encoded, beat, edit.outLen, edit.audioStart, (r) =>
+        setProgress(Math.round(r * 100)),
+      )
+      publishExport(url)
+      setEdit((prev) => (prev ? { ...prev, exported: encoded } : prev))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Export failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  /** The downloadable file is stale as soon as the cut list moves on from it. */
+  const exportCurrent = edit != null && exportUrl != null && edit.exported === edit.segments
 
   const hasClips = clips.length > 0
   const beatReady = beat != null && bpm != null && phase !== 'detecting'
@@ -177,7 +328,6 @@ export function GeneratorPage() {
                   </span>
                 </div>
                 <div className="wave__meta">
-                  {buffer && <span>{formatDuration(buffer.duration)}</span>}
                   <DropZone accept="audio/*" compact onFiles={handleBeat}>
                     <div className="drop__inner">
                       <span className="drop__hint">replace</span>
@@ -185,8 +335,16 @@ export function GeneratorPage() {
                   </DropZone>
                 </div>
               </div>
-              {buffer ? (
-                <Waveform buffer={buffer} bpm={bpm} onset={onset} />
+              {peaks ? (
+                <BeatTransport
+                  file={beat}
+                  peaks={peaks}
+                  bpm={bpm}
+                  onset={onset}
+                  startAt={startAt}
+                  windowLen={windowLen}
+                  onStartChange={setStartAt}
+                />
               ) : (
                 phase !== 'detecting' && (
                   <div className="wave__body" style={{ height: 'auto', padding: '14px' }}>
@@ -248,7 +406,12 @@ export function GeneratorPage() {
               <span className="section__index">03</span>
               <span className="section__label">Output</span>
               <span className="section__rule" />
-              <span className="section__aside">1080 × 1440</span>
+              <span className="section__aside">
+                1080 × 1440
+                {peaks && windowLen > 0 && (
+                  <> · {formatClock(startAt)} → {formatClock(startAt + windowLen)}</>
+                )}
+              </span>
             </div>
 
             <div className="output">
@@ -301,7 +464,57 @@ export function GeneratorPage() {
               </div>
             )}
 
-            {resultUrl && phase === 'done' && <VideoPreview url={resultUrl} />}
+          </section>
+        )}
+
+        {phase === 'done' && edit && (
+          <section className="reveal" style={{ ['--i' as string]: 3 }}>
+            <div className="section__head">
+              <span className="section__index">04</span>
+              <span className="section__label">Edit</span>
+              <span className="section__rule" />
+              <span className="section__aside">
+                {rebuilding ? 'rebuilding' : `preview ${PREVIEW_LABEL}`}
+              </span>
+            </div>
+
+            <SequenceEditor
+              segments={edit.segments}
+              originalSegments={edit.original}
+              library={edit.library}
+              durations={edit.durations}
+              beatBpm={edit.beatBpm}
+              previewUrl={previewUrl}
+              busy={rebuilding}
+              progress={rebuildProgress}
+              onChange={handleSegmentsChange}
+            />
+
+            <div className="editor__actions">
+              {exportCurrent ? (
+                <a className="ctl ctl--primary ctl--lg" href={exportUrl!} download="beat-clipper.mp4">
+                  Download MP4
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  className="ctl ctl--primary ctl--lg"
+                  disabled={exporting || rebuilding}
+                  onClick={handleExport}
+                >
+                  {exporting ? 'Rendering full size' : 'Render full size'}
+                </button>
+              )}
+            </div>
+
+            {exporting && (
+              <div className="meter">
+                <div className="meter__track">
+                  <div className="meter__fill" style={{ width: `${progress}%` }} />
+                </div>
+                <span className="meter__pct">{progress}%</span>
+              </div>
+            )}
           </section>
         )}
       </div>

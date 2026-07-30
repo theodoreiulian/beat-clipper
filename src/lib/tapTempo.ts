@@ -74,6 +74,19 @@ export function shiftGrid(grid: GridResult, deltaSeconds: number): GridResult {
   return { ...grid, offset }
 }
 
+/**
+ * Nudge the grid's tempo up/down by `deltaBpm`, keeping the first beat anchored
+ * where it is. The offset is re-wrapped into the new (slightly different) beat
+ * length so it stays a canonical phase in [0, 60/bpm).
+ */
+export function nudgeBpm(grid: GridResult, deltaBpm: number): GridResult {
+  const bpm = Math.max(1, grid.bpm + deltaBpm)
+  const beat = 60 / bpm
+  let offset = grid.offset % beat
+  if (offset < 0) offset += beat
+  return { bpm, offset }
+}
+
 /** Beat positions (in seconds) of the perfect grid across a clip of the given length. */
 export function gridBeatTimes(grid: GridResult, durationSeconds: number): number[] {
   const beat = 60 / grid.bpm
