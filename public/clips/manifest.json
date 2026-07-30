@@ -48,18 +48,6 @@
     "offset": 0
   },
   {
-    "id": "user-1fb9d980-f7a8-4a86-860b-1a389a530c36",
-    "file": "2000s 2.mp4",
-    "bpm": 140,
-    "offset": 0
-  },
-  {
-    "id": "user-7d21b2ca-0452-42aa-82e5-9000f40f645a",
-    "file": "2000s 1.mp4",
-    "bpm": 140,
-    "offset": 0.08491478520286624
-  },
-  {
     "id": "user-83fa2059-fd35-44b6-afeb-e91c22bd4267",
     "file": "kai offset.mp4",
     "bpm": 132,
@@ -76,12 +64,6 @@
     "file": "druski 1.mp4",
     "bpm": 138,
     "offset": 0.4073057231109681
-  },
-  {
-    "id": "user-d3a99424-add5-4fac-8ad3-c5c2ab5a3cdd",
-    "file": "hard.mp4",
-    "bpm": 160,
-    "offset": 0.06436789562822172
   },
   {
     "id": "user-d6f05a93-1f85-4535-b630-03140d293cc2",
@@ -112,5 +94,73 @@
     "file": "kai 5.mp4",
     "bpm": 149,
     "offset": 0
+  },
+  {
+    "id": "075a9fa9-5f57-4b8f-b8ff-5057bad0d391",
+    "file": "druski 2.mp4",
+    "bpm": 148.73096844161594,
+    "offset": 0.08378535679838621
+  },
+  {
+    "id": "c811e176-3012-478a-8677-fc4002e175b1",
+    "file": "export_1733397092024.mp4",
+    "bpm": 156.28621078305247,
+    "offset": 0.2498409618500081
+  },
+  {
+    "id": "d7d409f9-90ea-4c22-882b-2e45ab4d912a",
+    "file": "v0f025gc0000cs2korfog65n7ub3fj00.mp4",
+    "bpm": 135.9934351230874,
+    "offset": 0.12089912395537286,
+    "trimStart": null,
+    "trimEnd": 3.6499990078124998
+  },
+  {
+    "id": "eecb159d-f201-44a9-aaa2-fc07c198281c",
+    "file": "v0f025gc0000crvf43nog65h8qeuomug_dewatermarked.mp4",
+    "bpm": 149.73201300904043,
+    "offset": 0.34281234382663617,
+    "trimStart": null,
+    "trimEnd": 9.754365953125001
+  },
+  {
+    "id": "e69eedbc-a853-4190-8d44-400d8abdaa3e",
+    "file": "v0f044gc0000ckndcsjc77ueeai6dreg.mp4",
+    "bpm": 133.02167115186026,
+    "offset": 0.2226165628816667,
+    "trimStart": 1.9361396484375002,
+    "trimEnd": null
+  },
+  {
+    "id": "76f73b92-e073-45d3-9ce9-938900cdff0f",
+    "file": "v0f044gc0000cmepuvvog65vu72l0vo0.mp4",
+    "bpm": 125.97539020862772,
+    "offset": 0.3671720008253969,
+    "trimStart": 1.3652321484375003,
+    "trimEnd": null
+  },
+  {
+    "id": "ff5c8fef-f9d2-4471-a091-109a2428be46",
+    "file": "v0f044gc0000csr25ivog65soakf146g.mp4",
+    "bpm": 147.94617622994656,
+    "offset": 0.3333770718856464,
+    "trimStart": 0.07632890625,
+    "trimEnd": 9.6005859375
+  },
+  {
+    "id": "b2dc7e53-51bb-41ab-8a78-b5330d0a63c6",
+    "file": "v12044gd0000crupj4vog65t3td7hhrg.mp4",
+    "bpm": 189.31806283697307,
+    "offset": 0.09644153027173387,
+    "trimStart": 1.396128984375,
+    "trimEnd": null
+  },
+  {
+    "id": "277cff82-5e47-402e-b80e-16e9abda7721",
+    "file": "v12044gd0000csomuv7og65la82kn350.mp4",
+    "bpm": 191.0224603366587,
+    "offset": 0.2240900434985003,
+    "trimStart": 1.0921875,
+    "trimEnd": null
   }
 ]
