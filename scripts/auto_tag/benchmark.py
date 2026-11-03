@@ -40,7 +40,7 @@ def main():
             row['error'] = str(error)
         row['elapsedSeconds'] = round(time.monotonic() - started, 2)
         rows.append(row)
-        report = {'engineHash': engine_hash, 'version': 'beta-1', 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'total': len(entries), 'processed': len(rows), 'proposed': sum(r['predictedBpm'] is not None for r in rows), 'exact': sum(r['exact'] for r in rows), 'octaveEquivalent': sum(r['octaveEquivalent'] for r in rows), 'rows': rows}
+        report = {'engineHash': engine_hash, 'version': 'beta-2', 'createdAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'total': len(entries), 'processed': len(rows), 'proposed': sum(r['predictedBpm'] is not None for r in rows), 'exact': sum(r['exact'] for r in rows), 'octaveEquivalent': sum(r['octaveEquivalent'] for r in rows), 'rows': rows}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + '\n')
         print(f"{i+1}/{len(entries)} {entry['file']}: expected={entry['bpm']:.1f}, predicted={row['predictedBpm']}, exact={row['exact']}, octave={row['octaveEquivalent']}, seconds={row['elapsedSeconds']}" + (f" ERROR: {row['error']}" if row.get('error') else ''), flush=True)

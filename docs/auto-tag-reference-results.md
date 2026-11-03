@@ -1,4 +1,6 @@
-# Auto-tag beta: development reference check
+# Auto-tag beta-1: historical development reference check
+
+This report predates beta-2, which always uses audible soundtrack BPM and draws its grid on the video without a movement-agreement gate. It is retained as a historical result, not a measure of current audio coverage.
 
 Run: 2026-11-03T20:30:51Z. Detector: `beta-1`.
 

@@ -15,12 +15,14 @@ import { ClipThumb } from '../components/ClipThumb'
 import { TrimBar, type TrimRange } from '../components/TrimBar'
 import { AutoTagPanel, AutoTagReview } from '../components/AutoTagPanel'
 import { useAutoTag } from '../lib/autoTagApi'
+import { BeatGridOverlay } from '../components/BeatGridOverlay'
 
 export function TagPage() {
   const scanner = useAutoTag()
   const [verified, setVerified] = useState(false)
   const [bpmDraft, setBpmDraft] = useState('')
   const dirtyGridRef = useRef(false)
+  const soundtrackAttemptsRef = useRef(new Set<string>())
   const [clips, setClips] = useState<Clip[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -40,6 +42,7 @@ export function TagPage() {
   // video's metadata (and therefore its duration) has loaded.
   const [trim, setTrim] = useState<TrimRange | null>(null)
   const [metronome, setMetronome] = useState(true)
+  const [showVideoGrid, setShowVideoGrid] = useState(true)
   // Hear the clip's own audio while tagging. Off by default (clips autoplay
   // muted); the preference persists as you move between clips.
   const [clipAudio, setClipAudio] = useState(false)
@@ -88,6 +91,16 @@ export function TagPage() {
   const proposal = currentClip ? scanner.state?.proposals[currentClip.id] ?? null : null
   const pendingProposal = proposal?.state === 'pending' ? proposal : null
 
+  // Opening a clip checks its soundtrack automatically. One attempt per source
+  // window prevents silent clips (which create no audio proposal) from looping.
+  useEffect(() => {
+    if (!currentClip || !scanner.state?.ready || scanner.state.job?.status === 'running' || scanner.submitting || proposal?.result.version === 'beta-2') return
+    const key = JSON.stringify([currentClip.id, currentClip.trimStart, currentClip.trimEnd])
+    if (soundtrackAttemptsRef.current.has(key)) return
+    soundtrackAttemptsRef.current.add(key)
+    void scanner.action('/scan', { ids: [currentClip.id], audioOnly: true })
+  }, [currentClip?.id, currentClip?.trimStart, currentClip?.trimEnd, scanner.state?.ready, scanner.state?.job?.status, scanner.submitting, proposal?.result.version, scanner.action])
+
   // Keep the selection valid as the library / filter changes (e.g. after saving
   // a clip drops out of the untagged queue).
   useEffect(() => {
@@ -127,12 +140,14 @@ export function TagPage() {
     setVerified(false)
     if (pendingProposal?.result.bpm != null && pendingProposal.result.offset != null && !dirtyGridRef.current) {
       setGrid({ bpm: pendingProposal.result.bpm, offset: pendingProposal.result.offset })
+      if (pendingProposal.result.method === 'audio') setClipAudio(true)
     }
   }, [currentClip?.id, pendingProposal?.runId])
 
   useEffect(() => { setVerified(false); setBpmDraft(grid ? String(grid.bpm) : '') }, [grid])
 
   const useSuggestedGrid = (next: GridResult) => {
+    setShowVideoGrid(true)
     dirtyGridRef.current = true
     setTaps([])
     setGrid(next)
@@ -390,6 +405,7 @@ export function TagPage() {
                   autoPlay
                   loop
                   playsInline
+                  controls
                   key={currentClip.id}
                   onLoadedMetadata={(e) => {
                     const d = e.currentTarget.duration || 0
@@ -404,6 +420,7 @@ export function TagPage() {
                     setTrim({ start, end })
                   }}
                 />
+                {showVideoGrid && <BeatGridOverlay grid={grid} currentTime={playhead * clipDuration} soundtrack={pendingProposal?.result.method === 'audio' || pendingProposal?.result.method === 'audio-supported'} />}
               </div>
               <div className="stage__meta">
                 <span className="stage__name" title={currentClip.name}>
@@ -462,6 +479,7 @@ export function TagPage() {
                   <span className={`lamp${clipAudio ? ' lamp--on' : ''}`} />
                   Clip audio
                 </button>
+                <button type="button" className={`ctl${showVideoGrid ? ' ctl--engaged' : ''}`} onClick={() => setShowVideoGrid(v => !v)} aria-pressed={showVideoGrid}>Video grid</button>
               </div>
 
               <div className="rackpanel__row">
@@ -579,7 +597,7 @@ export function TagPage() {
               <div className="timeline__head">
                 <span className="timeline__hint">
                   Watch the playhead cross each beat mark, then nudge the grid until the
-                  clicks land on the dancer's beats.
+                  clicks land on the music's beats (or the dancer's beats for a silent clip).
                 </span>
               </div>
               <div className="timeline__track">

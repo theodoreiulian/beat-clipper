@@ -1629,3 +1629,14 @@ body {
 .autotag--review { margin: 0 0 18px; padding: 14px; }
 .autotag--review .autotag__proposal { margin: 0; padding: 0; border: 0; }
 .autotag--review h3 { font-size: 16px; }
+
+/* A beat ruler on the actual source preview, sharing its playhead and grid. */
+.video-grid { position: absolute; inset: 0; pointer-events: none; }
+.video-grid__accent { position: absolute; inset: 3px; border: 2px solid var(--signal); }
+.video-grid__panel { position: absolute; left: 12px; right: 12px; bottom: 52px; padding: 10px 10px 8px; color: #fff; background: rgb(0 0 0 / .74); border: 1px solid rgb(255 255 255 / .25); }
+.video-grid__readout { display: flex; justify-content: space-between; gap: 10px; font: 10px var(--font-mono); }
+.video-grid__ruler { height: 30px; position: relative; border-bottom: 1px solid rgb(255 255 255 / .5); margin-top: 8px; }
+.video-grid__tick { position: absolute; height: 13px; bottom: 0; border-left: 1px solid rgb(255 255 255 / .7); }
+.video-grid__tick span { position: absolute; bottom: 15px; transform: translateX(-50%); font: 9px var(--font-mono); }
+.video-grid__cursor { position: absolute; top: 0; bottom: -2px; width: 2px; background: var(--signal); box-shadow: 0 0 7px rgb(180 255 100 / .45); }
+@media (prefers-reduced-motion: reduce) { .video-grid__accent { display: none; } }

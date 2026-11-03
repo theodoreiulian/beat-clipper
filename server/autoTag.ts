@@ -8,7 +8,7 @@ import type { ManifestEntry } from '../src/types'
 import type { AutoTagState, AutoTagJob, AutoTagProposal, AutoTagResult, AutoTagBenchmark, BenchmarkRow } from '../src/lib/autoTagTypes'
 
 const PREFIX = '/__library/auto-tag'
-const VERSION = 'beta-1'
+const VERSION = 'beta-2'
 
 /** Content identity includes the usable window; a changed file/trim invalidates review. */
 export async function clipFingerprint(root: string, entry: ManifestEntry): Promise<string> {
@@ -22,7 +22,7 @@ interface Options {
   entries: () => Promise<ManifestEntry[]>
   approve: (id: string, grid: { bpm: number; offset: number }, fingerprint: string) => Promise<ManifestEntry>
   /** Deterministic worker seam for queue/approval tests; never set from HTTP input. */
-  workerCommand?: (entry: ManifestEntry, visual: boolean) => { command: string; args: string[] }
+  workerCommand?: (entry: ManifestEntry, audioOnly: boolean) => { command: string; args: string[] }
   isReady?: () => Promise<boolean>
 }
 
@@ -46,7 +46,7 @@ export function createAutoTagService(options: Options) {
     try {
       const data = JSON.parse(await readFile(statePath, 'utf8'))
       proposals = data.proposals ?? {}
-      benchmark = data.benchmark ?? null
+      benchmark = data.benchmark?.version === VERSION ? data.benchmark : null
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   })()
   async function persist() {
@@ -58,7 +58,7 @@ export function createAutoTagService(options: Options) {
   async function ready() {
     if (options.isReady) return options.isReady()
     try {
-      await Promise.all([python, path.join(runtime, 'ready.json'), ...['lite', 'full'].map(v => path.join(runtime, 'models', `pose_landmarker_${v}.task`))].map(file => access(file)))
+      await Promise.all([python, path.join(runtime, 'ready.json'), ...['full'].map(v => path.join(runtime, 'models', `pose_landmarker_${v}.task`))].map(file => access(file)))
       return true
     } catch { return false }
   }
@@ -66,7 +66,7 @@ export function createAutoTagService(options: Options) {
     await loaded
     try {
       const report = JSON.parse(await readFile(path.join(runtime, 'benchmark.json'), 'utf8'))
-      if (report.processed === report.total && (!benchmark || report.createdAt > benchmark.createdAt)) benchmark = report
+      if (report.version === VERSION && report.processed === report.total && (!benchmark || report.createdAt > benchmark.createdAt)) benchmark = report
     } catch { /* A benchmark is optional. */ }
     return { ready: await ready(), job, proposals, benchmark }
   }
@@ -103,11 +103,11 @@ export function createAutoTagService(options: Options) {
       })
     })
   }
-  function worker(entry: ManifestEntry, visual: boolean) {
-    if (options.workerCommand) return options.workerCommand(entry, visual)
-    return { command: python, args: ['scripts/auto_tag/scan.py', '--file', path.join(root, 'public/clips', entry.file), '--start', String(entry.trimStart ?? 0), ...(entry.trimEnd != null ? ['--end', String(entry.trimEnd)] : []), ...(visual ? ['--visual'] : [])] }
+  function worker(entry: ManifestEntry, audioOnly: boolean) {
+    if (options.workerCommand) return options.workerCommand(entry, audioOnly)
+    return { command: python, args: ['scripts/auto_tag/scan.py', '--file', path.join(root, 'public/clips', entry.file), '--start', String(entry.trimStart ?? 0), ...(entry.trimEnd != null ? ['--end', String(entry.trimEnd)] : []), ...(audioOnly ? ['--audio-only'] : [])] }
   }
-  async function scan(entries: ManifestEntry[], kind: 'scan' | 'benchmark', visual: boolean, active: AutoTagJob) {
+  async function scan(entries: ManifestEntry[], kind: 'scan' | 'benchmark', audioOnly: boolean, active: AutoTagJob) {
     const rows: BenchmarkRow[] = []
     try {
       for (const entry of entries) {
@@ -119,7 +119,7 @@ export function createAutoTagService(options: Options) {
           if (active.status !== 'running' || closed) break
           let result: AutoTagResult | null = null
           let workerError = ''
-          const cmd = worker(entry, visual)
+          const cmd = worker(entry, audioOnly)
           await launch(cmd.command, cmd.args, line => {
             let data
             try { data = JSON.parse(line) } catch { return }
@@ -137,6 +137,8 @@ export function createAutoTagService(options: Options) {
           if (active.status !== 'running' || closed) break
           if (kind === 'benchmark') {
             rows.push(benchmarkRow(entry, analyzed))
+          } else if (audioOnly && analyzed.audio?.available === false) {
+            active.skipped = (active.skipped ?? 0) + 1
           } else {
             await lock(async () => {
               if (active.status !== 'running' || closed) return
@@ -160,7 +162,7 @@ export function createAutoTagService(options: Options) {
       }
       if (active.status === 'running') {
         active.status = 'completed'; active.progress = 1
-        active.message = active.failed ? `Finished with ${active.failed} failed scans. Other results are saved.` : 'Finished. Suggestions still require human verification.'
+        active.message = active.failed ? `Finished with ${active.failed} failed scans. Other results are saved.` : `Finished${active.skipped ? ` · ${active.skipped} without audible soundtracks` : ''}. Suggestions still require human verification.`
       }
     } catch (error) { active.status = 'failed'; active.message = String((error as Error).message) }
     finally { delete active.currentClipId; delete active.currentFile }
@@ -201,7 +203,7 @@ export function createAutoTagService(options: Options) {
         })
         send(res, 202, { job: active })
         if (kind === 'setup') void setup(active)
-        else void scan(entries, kind, body.visual === true, active)
+        else void scan(entries, kind, body.audioOnly === true, active)
         return true
       }
       const match = route.match(/^\/([^/]+)\/(approve|dismiss)$/)
@@ -230,7 +232,7 @@ export function createAutoTagService(options: Options) {
 
 function validResult(result: AutoTagResult) {
   return ['suggested', 'needs-manual'].includes(result.status) && Array.isArray(result.candidates) && Array.isArray(result.warnings) &&
-    ['audio-supported', 'visual'].includes(result.method) && ['low', 'medium', 'high'].includes(result.confidence) &&
+    ['audio', 'audio-supported', 'visual'].includes(result.method) && ['low', 'medium', 'high'].includes(result.confidence) &&
     Number.isFinite(result.evidenceScore) && result.evidenceScore >= 0 && result.evidenceScore <= 1 &&
     (result.bpm === null || Number.isFinite(result.bpm) && result.bpm >= 30 && result.bpm <= 300) &&
     (result.bpm === null ? result.offset === null : typeof result.offset === 'number' && Number.isFinite(result.offset) && result.offset >= 0 && result.offset < 60 / result.bpm) &&

@@ -1,14 +1,13 @@
 """Local, label-blind dance tempo proposals. Never reads or writes the manifest.
 
-Audio is only selected when independent pose periodicity supports its tempo.
-Otherwise a denser pose pass ranks movement rhythms and exposes metrical ambiguity.
+Every audible soundtrack is analyzed independently of dancer movement.
+Silent clips fall back to detailed visual tempo analysis. Human review is always required.
 Confidence is an evidence score, not a calibrated probability of correctness.
 """
 from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import subprocess
@@ -23,10 +22,10 @@ import cv2
 import numpy as np
 from scipy import signal, ndimage
 
-VERSION = 'beta-1'
+VERSION = 'beta-2'
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / '.auto-tag'
-MIN_BPM, MAX_BPM = 45.0, 240.0
+MIN_BPM, MAX_BPM = 30.0, 300.0
 BPM_GRID = np.arange(MIN_BPM, MAX_BPM + .125, .25)
 JOINTS = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 
@@ -110,11 +109,14 @@ def phase_offset(envelope: np.ndarray, rate: float, bpm: float, start=0.) -> flo
     return float(np.argmax(hist) / bins * period)
 
 
-def ranked_tempos(features: np.ndarray, rate: float, energy=None, start=0.) -> dict:
+def ranked_tempos(features: np.ndarray, rate: float, energy=None, start=0., power_override=None) -> dict:
     x = normalized(features)
     if len(x) < rate * 2 or x.shape[1] == 0:
         return {'candidates': [], 'confidence': 0., 'stability': 0., 'strength': 0.}
-    if energy is not None:
+    if power_override is not None:
+        power = np.asarray(power_override)
+        envelope = np.mean(np.maximum(x, 0), axis=1)
+    elif energy is not None:
         power, envelope, x = motion_curves(x, rate)
     else:
         fourier = spectrum(x, rate)
@@ -126,7 +128,7 @@ def ranked_tempos(features: np.ndarray, rate: float, energy=None, start=0.) -> d
         return {'candidates': [], 'confidence': 0., 'stability': 0., 'strength': 0.}
     # A broad, disclosed convention preference resolves otherwise equal octave peaks.
     # No saved tag, filename, genre or benchmark target enters this calculation.
-    prior = .4 + .6 * np.exp(-.5 * (np.log2(BPM_GRID / 125) / .65) ** 2)
+    prior = np.ones_like(BPM_GRID) if power_override is not None else .4 + .6 * np.exp(-.5 * (np.log2(BPM_GRID / 125) / .65) ** 2)
     order = sorted(peaks, key=lambda i: power[i] * prior[i], reverse=True)
     candidates = []
     for i in order:
@@ -157,6 +159,34 @@ def ranked_tempos(features: np.ndarray, rate: float, energy=None, start=0.) -> d
     return {'candidates': candidates, 'confidence': number(confidence), 'stability': number(stability), 'strength': number(strength)}
 
 
+def refine_audio_grid(envelope: np.ndarray, rate: float, candidate: dict, start: float) -> dict:
+    """Fit observed musical transients to a regular clock to remove spectral-bin bias."""
+    period, offset = 60 / candidate['bpm'], candidate['offset']
+    peaks, _ = signal.find_peaks(envelope, distance=max(1, round(rate * .08)), prominence=max(1e-8, np.std(envelope) * .15))
+    times = peaks / rate + start
+    indices = np.rint((times - offset) / period).astype(int)
+    residual = np.abs(times - (offset + indices * period))
+    keep = residual < min(.065, period * .18)
+    times, indices, weights = times[keep], indices[keep], envelope[peaks[keep]]
+    # One onset per beat: a kick and snare/flam must not count as two observations.
+    chosen = [np.flatnonzero(indices == k)[np.argmax(weights[indices == k])] for k in np.unique(indices)]
+    times, indices, weights = times[chosen], indices[chosen], weights[chosen]
+    if len(times) < 6 or np.ptp(indices) < 6:
+        return candidate
+    for _ in range(3):
+        if len(times) < 6:
+            return candidate
+        slope, intercept = np.polyfit(indices, times, 1, w=np.sqrt(np.maximum(weights, 1e-8)))
+        errors = np.abs(times - (intercept + indices * slope))
+        keep = errors <= max(.018, min(.05, float(np.median(errors)) * 3))
+        if np.all(keep):
+            break
+        times, indices, weights = times[keep], indices[keep], weights[keep]
+    if slope <= 0 or abs(slope / period - 1) > .02 or not MIN_BPM <= 60 / slope <= MAX_BPM:
+        return candidate
+    return {**candidate, 'bpm': number(60 / slope), 'offset': number(intercept % slope, 4)}
+
+
 def audio_analysis(path: Path, start: float, duration: float) -> tuple[dict, np.ndarray | None, float]:
     import librosa
     rate, hop = 22050, 256
@@ -165,8 +195,10 @@ def audio_analysis(path: Path, start: float, duration: float) -> tuple[dict, np.
     if p.returncode or not p.stdout:
         return {'available': False, 'reason': 'No decodable audio track', 'candidates': [], 'confidence': 0}, None, rate / hop
     y = np.frombuffer(p.stdout, dtype='<f4').copy()
-    if len(y) < 2 * rate or float(np.sqrt(np.mean(y ** 2))) < 1e-4:
-        return {'available': False, 'reason': 'Audio is silent or too short', 'candidates': [], 'confidence': 0}, None, rate / hop
+    if not len(y) or float(np.max(np.abs(y))) < 5e-5:
+        return {'available': False, 'reason': 'Audio is silent', 'candidates': [], 'confidence': 0}, None, rate / hop
+    if len(y) < 2 * rate:
+        return {'available': True, 'reason': 'Soundtrack is too short to establish a steady BPM', 'candidates': [], 'confidence': 0}, None, rate / hop
     mel = librosa.feature.melspectrogram(y=y, sr=rate, n_fft=2048, hop_length=hop, n_mels=96)
     db = librosa.power_to_db(mel, ref=np.max)
     # Low, middle and upper spectral flux, separately whitened so a loud vocal
@@ -177,10 +209,26 @@ def audio_analysis(path: Path, start: float, duration: float) -> tuple[dict, np.
         env = np.maximum(0, env - ndimage.median_filter(env, size=31) * .5)
         bands.append(env)
     features = np.stack(bands, axis=1)
-    summary = ranked_tempos(features, rate / hop, start=start)
+    envelope_rate = rate / hop
+    fourier = spectrum(features, envelope_rate)
+    recurrence = autocorrelation_curve(features, envelope_rate)
+    curve = .45 * fourier / max(np.max(fourier), 1e-9) + .55 * recurrence / max(np.max(recurrence), 1e-9)
+    # Log-band whitening makes quiet hi-hats as salient as loud kicks. Preserve
+    # physical low-band dynamics as independent evidence for the main pulse so
+    # eighth-note hats don't automatically double the reported musical BPM.
+    bass_fraction = float(np.sum(mel[:8]) / max(np.sum(mel), 1e-9))
+    if bass_fraction >= .02:
+        bass = np.mean(np.sqrt(mel[:8]), axis=0)
+        bass_onsets = np.maximum(0, np.diff(bass, prepend=bass[0]))
+        bass_fourier = spectrum(bass_onsets, envelope_rate)
+        bass_recurrence = autocorrelation_curve(bass_onsets, envelope_rate)
+        bass_curve = .35 * bass_fourier / max(np.max(bass_fourier), 1e-9) + .65 * bass_recurrence / max(np.max(bass_recurrence), 1e-9)
+        curve = .55 * curve + .45 * bass_curve
+    summary = ranked_tempos(features, envelope_rate, start=start, power_override=curve)
     env = np.mean(features / np.maximum(np.std(features, axis=0), 1e-8), axis=1)
     for candidate in summary['candidates']:
         candidate['offset'] = number(phase_offset(env, rate / hop, candidate['bpm'], start), 4)
+        candidate.update(refine_audio_grid(env, rate / hop, candidate, start))
     return {'available': True, **summary}, env, rate / hop
 
 
@@ -189,7 +237,7 @@ def pose_features(path: Path, start: float, duration: float, quick: bool) -> tup
     rate = 12. if quick else 24.
     model = RUNTIME / 'models' / f'pose_landmarker_{"lite" if quick else "full"}.task'
     stat = path.stat()
-    key = hashlib.sha256(f'{VERSION}|{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{start}|{duration}|{quick}|stabilized-v2'.encode()).hexdigest()
+    key = hashlib.sha256(f'pose-stabilized-v2|{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{start}|{duration}|{quick}|stabilized-v2'.encode()).hexdigest()
     cache = RUNTIME / 'features' / f'{key}.npz'
     if cache.exists():
         with np.load(cache, allow_pickle=False) as saved:
@@ -331,102 +379,77 @@ def pose_features(path: Path, start: float, duration: float, quick: bool) -> tup
     return features, energy, rate, quality
 
 
-def alignment_check(audio: dict, motion: dict, features: np.ndarray, rate: float, quality: dict) -> dict:
-    rejected = {'plausible': False, 'reason': 'Insufficient independent movement evidence'}
-    if quality.get('coverage', 0) < .55 or quality.get('channels', 0) < 6 or motion['confidence'] < .18:
-        return rejected
-    if not audio.get('available') or audio.get('confidence', 0) < .45:
-        return {'plausible': False, 'reason': 'No stable musical pulse'}
-    for a in audio['candidates'][:3]:
-        if a['score'] < .7:
-            continue
-        for m in motion['candidates'][:6]:
-            if m['score'] < .55:
-                continue
-            for multiplier in [.5, 1., 2.]:
-                expected = a['bpm'] * multiplier
-                error = abs(m['bpm'] - expected) / expected
-                if error > .025:
-                    continue
-                # Phase consistency across temporal windows, in absolute clip time.
-                width = min(len(features) // 2, round(rate * 4))
-                if width < rate * 2:
-                    continue
-                phases, strengths = [], []
-                x = normalized(features)
-                for lo in [0, (len(x) - width) // 2, len(x) - width]:
-                    t = np.arange(lo, lo + width) / rate
-                    z = np.exp(-2j * np.pi * expected / 60 * t) @ (x[lo:lo + width] * np.hanning(width)[:, None])
-                    phases.append(z / np.maximum(np.abs(z), 1e-8)); strengths.append(np.abs(z))
-                weights = np.mean(strengths, axis=0)
-                coherence = float(np.average(np.abs(np.mean(phases, axis=0)), weights=np.maximum(weights, 1e-8)))
-                plausible_pulse = (m is motion['candidates'][0] and error < .015 and motion.get('stability', 0) >= .65 and motion['confidence'] >= .25 and quality.get('coverage', 0) >= .75)
-                if (coherence >= .78 or plausible_pulse) and quality.get('trackSwitches', 0) < 3:
-                    return {'plausible': True, 'reason': 'Independent movement rhythm supports the musical pulse; grid phase still needs review', 'audioBpm': a['bpm'], 'motionBpm': m['bpm'], 'ratio': multiplier, 'relativeError': number(error), 'coherence': number(coherence)}
-    return {'plausible': False, 'reason': 'Music and movement do not show a stable matching rhythm'}
+def soundtrack_result(audio: dict, analyzed_seconds: float, began: float) -> dict:
+    candidates = audio.get('candidates', [])
+    selected = candidates[0] if candidates else None
+    evidence = float(audio.get('confidence', 0))
+    warnings = []
+    if not audio.get('available'):
+        warnings.append(audio.get('reason', 'No audible soundtrack.'))
+    elif not selected:
+        warnings.append('The soundtrack has no measurable steady pulse. Set a grid manually after listening.')
+    elif evidence < .5:
+        warnings.append('The musical pulse is uncertain. A best estimate is shown; listen and check the alternatives before approving.')
+    if analyzed_seconds < 6:
+        warnings.append('Short soundtrack: verify tempo and half/double-time alternatives carefully.')
+    ambiguous = bool(candidates and any(c['score'] > .7 * selected['score'] and min(abs(c['bpm'] / selected['bpm'] - .5), abs(c['bpm'] / selected['bpm'] - 2)) < .05 for c in candidates[1:]))
+    if ambiguous:
+        warnings.append('A half/double-time pulse is also plausible; choose the musical beat you hear.')
+    return {'version': VERSION, 'status': 'suggested' if selected else 'needs-manual',
+            'bpm': selected['bpm'] if selected else None, 'offset': selected['offset'] if selected else None,
+            'method': 'audio', 'confidence': 'high' if evidence >= .8 and analyzed_seconds >= 8 and not ambiguous else 'medium' if evidence >= .5 else 'low',
+            'evidenceScore': number(evidence), 'candidates': candidates, 'audio': audio,
+            'warnings': warnings, 'analyzedSeconds': number(analyzed_seconds), 'elapsedSeconds': number(time.monotonic() - began)}
 
 
-def analyze_clip(path: Path, start=0., end=None, force_visual=False) -> dict:
+def analyze_clip(path: Path, start=0., end=None, audio_only=False) -> dict:
     began = time.monotonic()
     cap = cv2.VideoCapture(str(path))
-    fps = cap.get(cv2.CAP_PROP_FPS); count = cap.get(cv2.CAP_PROP_FRAME_COUNT);cap.release()
+    fps = cap.get(cv2.CAP_PROP_FPS); count = cap.get(cv2.CAP_PROP_FRAME_COUNT); cap.release()
     total = count / fps if fps > 0 else 0
     if not np.isfinite(total) or total <= 0:
         raise RuntimeError('Video duration could not be read')
     start = max(0., start)
     end = min(total, end if end is not None else total)
     duration = min(60., end - start)
+    # Measure the entire source soundtrack, even when the chosen usable window is
+    # short or silent. Offsets remain in absolute source-video time (start=0).
+    # No pose/visibility, dance agreement or confidence gate may suppress this grid.
+    emit('audio', .05, 'Measuring the full soundtrack BPM and beat timing')
+    audio, _, _ = audio_analysis(path, 0., total)
+    if audio.get('available') or audio_only:
+        result = soundtrack_result(audio, total, began)
+        emit('complete', 1., 'Soundtrack grid ready for human review' if result['bpm'] else 'No steady soundtrack pulse detected')
+        return result
     if duration < 2.5:
-        return {'version': VERSION, 'status': 'needs-manual', 'bpm': None, 'offset': None, 'method': 'visual', 'confidence': 'low', 'evidenceScore': 0., 'candidates': [], 'warnings': ['Fewer than 2.5 seconds of usable footage; tap this clip manually.'], 'analyzedSeconds': number(max(0, duration)), 'elapsedSeconds': number(time.monotonic() - began)}
-    emit('audio', .05, 'Measuring soundtrack pulse')
-    audio, _, _ = audio_analysis(path, start, duration)
-    quick_motion = None
-    agreement = {'plausible': False, 'reason': 'No soundtrack to compare'}
-    if audio.get('available') and not force_visual:
-        features, energy, rate, quality = pose_features(path, start, min(duration, 10.), True)
-        quick_motion = ranked_tempos(features, rate, energy, start)
-        agreement = alignment_check(audio, quick_motion, features, rate, quality)
-        if agreement['plausible']:
-            selected = next(c for c in audio['candidates'] if c['bpm'] == agreement['audioBpm'])
-            candidates = [selected] + [c for c in audio['candidates'] if c != selected]
-            method = 'audio-supported'
-            evidence = min(audio['confidence'], .5 + .5 * quick_motion['confidence'])
-            motion = quick_motion
-        else:
-            emit('visual', .15, 'Soundtrack not corroborated; running detailed movement analysis')
-    if not agreement['plausible'] or force_visual:
-        features, energy, rate, quality = pose_features(path, start, duration, False)
-        motion = ranked_tempos(features, rate, energy, start)
-        evidence = min(.7, motion['confidence'] * min(1., quality.get('coverage', 0) / .8))
-        if quality.get('channels', 0) < 6:
-            evidence *= .35
-        evidence *= max(.5, 1 - quality.get('trackSwitches', 0) * .06)
-        candidates = motion['candidates']
-        method = 'visual'
-    warnings = []
+        return {'version': VERSION, 'status': 'needs-manual', 'bpm': None, 'offset': None, 'method': 'visual', 'confidence': 'low', 'evidenceScore': 0., 'candidates': [], 'audio': audio,
+                'warnings': ['No audible soundtrack and fewer than 2.5 seconds of usable footage; tap this clip manually.'], 'analyzedSeconds': number(max(0, duration)), 'elapsedSeconds': number(time.monotonic() - began)}
+    emit('visual', .15, 'No audible soundtrack; running detailed movement analysis')
+    features, energy, rate, quality = pose_features(path, start, duration, False)
+    motion = ranked_tempos(features, rate, energy, start)
+    evidence = min(.7, motion['confidence'] * min(1., quality.get('coverage', 0) / .8))
+    if quality.get('channels', 0) < 6:
+        evidence *= .35
+    evidence *= max(.5, 1 - quality.get('trackSwitches', 0) * .06)
+    candidates = motion['candidates']
+    warnings = ['No audible soundtrack. The grid is estimated from movement; verify tempo and phase manually.']
     if end - start > 60:
-        warnings.append('Only the first 60 seconds of the usable window were analyzed.')
+        warnings.append('Only the first 60 seconds of the usable window were analyzed for movement.')
     if quality.get('coverage', 0) < .65:
         warnings.append('Body tracking is incomplete or occluded; this estimate may follow the wrong movement.')
     if quality.get('trackSwitches', 0) >= 3:
         warnings.append('The main dancer changed or the camera cut; a single tempo may not fit.')
     if duration < 6:
         warnings.append('Short clip: too few independent movement cycles to establish a stable tempo.')
-    if method == 'visual':
-        warnings.append('Movement alone cannot always distinguish a beat from a half/double-time dance cycle. Check alternatives and grid phase.')
-    ambiguous = bool(candidates and any(c['score'] > .7 * candidates[0]['score'] and min(abs(c['bpm'] / candidates[0]['bpm'] - .5), abs(c['bpm'] / candidates[0]['bpm'] - 2)) < .05 for c in candidates[1:]))
-    if ambiguous:
-        warnings.append('Strong half/double-time alternative; choose the pulse that matches the dancer.')
-        evidence = min(evidence, .6)
+    warnings.append('Movement alone cannot always distinguish a beat from a half/double-time dance cycle. Check alternatives and grid phase.')
     usable = bool(candidates) and evidence >= .5 and quality.get('coverage', 0) >= .55
-    confidence = 'high' if method == 'audio-supported' and evidence >= .8 and not ambiguous and duration >= 8 else 'medium' if evidence >= .5 else 'low'
     selected = candidates[0] if usable else None
     if not usable:
-        warnings.insert(0, 'Evidence is below the recommendation threshold. Tap manually or audition the exploratory candidates; no grid has been preselected.')
+        warnings.insert(0, 'Movement evidence is too weak to preselect a grid. Tap manually or audition the exploratory candidates.')
     emit('complete', 1., 'Suggestion ready for human review' if usable else 'Manual tagging recommended')
     return {'version': VERSION, 'status': 'suggested' if usable else 'needs-manual', 'bpm': selected['bpm'] if selected else None, 'offset': selected['offset'] if selected else None,
-            'method': method, 'confidence': confidence, 'evidenceScore': number(evidence), 'candidates': candidates, 'audio': audio, 'motion': motion,
-            'agreement': agreement, 'tracking': quality, 'warnings': warnings, 'analyzedSeconds': number(duration), 'elapsedSeconds': number(time.monotonic() - began)}
+            'method': 'visual', 'confidence': 'medium' if evidence >= .5 else 'low', 'evidenceScore': number(evidence), 'candidates': candidates, 'audio': audio, 'motion': motion,
+            'tracking': quality, 'warnings': warnings, 'analyzedSeconds': number(duration), 'elapsedSeconds': number(time.monotonic() - began)}
 
 
 def main():
@@ -435,12 +458,12 @@ def main():
     parser.add_argument('--file', type=Path)
     parser.add_argument('--start', type=float, default=0.)
     parser.add_argument('--end', type=float)
-    parser.add_argument('--visual', action='store_true')
+    parser.add_argument('--audio-only', action='store_true')
     args = parser.parse_args()
     if args.check:
         import mediapipe
         import librosa
-        for variant in ['lite', 'full']:
+        for variant in ['full']:
             if not (RUNTIME / 'models' / f'pose_landmarker_{variant}.task').is_file():
                 raise RuntimeError(f'Missing {variant} pose model; run npm run setup:auto-tag')
         subprocess.run(['ffmpeg', '-version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -448,7 +471,7 @@ def main():
         return
     if not args.file:
         parser.error('--file is required')
-    result = analyze_clip(args.file, args.start, args.end, args.visual)
+    result = analyze_clip(args.file, args.start, args.end, args.audio_only)
     print(json.dumps({'type': 'result', 'result': result}, allow_nan=False), flush=True)
 
 

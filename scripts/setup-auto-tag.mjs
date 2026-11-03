@@ -20,7 +20,7 @@ try {
   }
   await unlink(resolve(home, 'ready.json')).catch(() => {})
   await run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'scripts/auto_tag/requirements.txt'])
-  for (const variant of ['lite', 'full']) {
+  for (const variant of ['full']) {
     const target = resolve(home, 'models', `pose_landmarker_${variant}.task`)
     try { await access(target); continue } catch { /* download once */ }
     console.log(`Downloading Google's ${variant} pose model…`)
@@ -32,6 +32,6 @@ try {
     } catch (error) { await unlink(temporary).catch(() => {}); throw error }
   }
   await run(python, ['scripts/auto_tag/scan.py', '--check'])
-  await writeFile(resolve(home, 'ready.json'), JSON.stringify({ version: 'beta-1' }) + '\n')
+  await writeFile(resolve(home, 'ready.json'), JSON.stringify({ version: 'beta-2' }) + '\n')
   console.log('Auto-tag beta is ready. Analysis stays on this computer.')
 } catch (error) { console.error(error.message); process.exitCode = 1 }

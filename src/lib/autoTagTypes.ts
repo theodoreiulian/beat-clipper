@@ -12,7 +12,7 @@ export interface AutoTagResult {
   status: 'suggested' | 'needs-manual'
   bpm: number | null
   offset: number | null
-  method: 'audio-supported' | 'visual'
+  method: 'audio' | 'audio-supported' | 'visual'
   confidence: 'low' | 'medium' | 'high'
   /** Evidence score, never presented as a probability of correctness. */
   evidenceScore: number
@@ -41,6 +41,7 @@ export interface AutoTagJob {
   total: number
   done: number
   failed: number
+  skipped?: number
   currentClipId?: string
   currentFile?: string
   stage: string

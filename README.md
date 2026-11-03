@@ -27,11 +27,13 @@ with the metronome, and **Save grid**. Trim the usable window as needed. Deletin
 moves a clip to `public/clips/_trash/`; **Backup manifest** is an optional download.
 
 The **Auto-tag beta** suggests BPMs using local soundtrack and pose analysis.
-It uses the music only when movement supports that pulse, otherwise runs a denser
-movement analysis. Scan one clip or queue unscanned clips, audition/correct each
-suggestion, then explicitly **Approve grid for rendering**. Unreviewed suggestions
-stay outside the manifest and cannot enter renders. Existing tags can be used as
-an accuracy benchmark without changing them.
+Every audible soundtrack is analyzed for its own BPM and beat timing, regardless
+of the dancer's movement; silent clips use movement analysis. Clips are checked
+automatically when opened, and **Scan all soundtracks** includes already-tagged clips.
+Audition/correct each suggestion using the beat grid drawn over the video, then
+explicitly **Approve grid for rendering**. Unreviewed suggestions stay outside the
+manifest and cannot enter renders. Saved grids can be compared with scans without
+changing their tags.
 
 One-time setup: `npm run setup:auto-tag` (Python 3.11–3.12 and native FFmpeg), or
 click **Set up scanner** in the Library. See [the beta guide](docs/auto-tag-beta.md)
