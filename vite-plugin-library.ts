@@ -17,14 +17,8 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import type { Plugin } from 'vite'
 
-interface ManifestEntry {
-  id: string
-  file: string
-  bpm: number | null
-  offset: number | null
-  trimStart?: number | null
-  trimEnd?: number | null
-}
+import type { ManifestEntry } from './src/types'
+import { createAutoTagService, clipFingerprint } from './server/autoTag'
 
 // Fields a PATCH may set. Only keys actually present in the request body are
 // touched, so e.g. a trim-only save never clobbers bpm/offset.
@@ -94,9 +88,31 @@ export function libraryPlugin(): Plugin {
         return result
       }
 
+      const autoTag = createAutoTagService({
+        root: server.config.root,
+        entries: () => withLock(reconcile),
+        approve: (id, grid, fingerprint) => withLock(async () => {
+          const entries = await readManifest()
+          const entry = entries.find(e => e.id === id)
+          if (!entry) throw new Error('Clip no longer exists')
+          if (await clipFingerprint(server.config.root, entry) !== fingerprint) {
+            throw new Error('Clip or usable window changed. Scan it again before approving.')
+          }
+          entry.bpm = grid.bpm
+          entry.offset = grid.offset
+          await writeManifest(entries)
+          return entry
+        }),
+      })
+      server.httpServer?.once('close', () => autoTag.close())
+
       server.middlewares.use((req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://localhost')
-        if (!url.pathname.startsWith(API_PREFIX)) return next()
+        if (url.pathname === '/__library/auto-tag' || url.pathname.startsWith('/__library/auto-tag/')) {
+          void autoTag.handle(req, res, url).catch(next)
+          return
+        }
+        if (url.pathname !== API_PREFIX && !url.pathname.startsWith(`${API_PREFIX}/`)) return next()
 
         handle(req, res, url).catch((err) => {
           server.config.logger.error(`[library] ${String(err?.stack ?? err)}`)
@@ -111,7 +127,7 @@ export function libraryPlugin(): Plugin {
 
         // GET /__library/clips -> reconciled library
         if (method === 'GET' && !id) {
-          sendJson(res, 200, await reconcile())
+          sendJson(res, 200, await withLock(reconcile))
           return
         }
 

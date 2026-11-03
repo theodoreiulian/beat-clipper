@@ -17,23 +17,31 @@ Built with React, TypeScript, and Vite.
 - **Generator** (`/`): drop a beat, pick a length (15s / 30s / Full, capped at 60s),
   Generate, preview, download.
 - **Tagging tool** (`/#/tag`): the owner's workflow for building the clip library:
-  drop dance clips, tap each clip's BPM, delete the ones you don't want, then
-  **Export manifest**.
+  drop clips, scan or tap their BPM, verify timing, and save approved grids to disk.
 
 ## Building the clip library
 
-1. Open the tagging tool and drop in dance clips (ideally < 10s each).
-2. For each clip, tap the **Tap** button on every beat the dancer hits (or focus it and
-   press Space). Adjust the number if needed and **Save BPM**.
-3. Delete any clips you don't like.
-4. Click **Export manifest** to download `manifest.json`.
-5. Commit the clip video files into `public/clips/` and replace
-   `public/clips/manifest.json` with the exported file (each entry's `file` must match a
-   video filename in that folder). For user clips added through the browser, save the
-   corresponding video as `<id>.mp4` in `public/clips/`.
+Run the dev server and open `/#/tag`. Drop clips to write them into `public/clips/`
+and the shared manifest directly. Tap the dancer's tempo (Space), align the grid
+with the metronome, and **Save grid**. Trim the usable window as needed. Deleting
+moves a clip to `public/clips/_trash/`; **Backup manifest** is an optional download.
 
-The committed `public/clips/` + `manifest.json` is the shared library every visitor's
-generator uses. (Browser-side edits live in IndexedDB and are local to that browser.)
+The **Auto-tag beta** suggests BPMs using local soundtrack and pose analysis.
+Every audible soundtrack is analyzed for its own BPM and beat timing, regardless
+of the dancer's movement; silent clips use movement analysis. Clips are checked
+automatically when opened, and **Scan all soundtracks** includes already-tagged clips.
+Audition/correct each suggestion using the beat grid drawn over the video, then
+explicitly **Approve grid for rendering**. Unreviewed suggestions stay outside the
+manifest and cannot enter renders. Saved grids can be compared with scans without
+changing their tags.
+
+One-time setup: `npm run setup:auto-tag` (Python 3.11–3.12 and native FFmpeg), or
+click **Set up scanner** in the Library. See [the beta guide](docs/auto-tag-beta.md)
+for the review workflow, accuracy limits and benchmark commands.
+
+Commit the clip files and `public/clips/manifest.json` to share the verified library
+with every visitor. The Library and its local analysis worker are development-only;
+the generator still deploys as a fully static site.
 
 ## Develop
 

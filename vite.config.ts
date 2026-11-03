@@ -17,7 +17,7 @@ export default defineConfig({
       // file watcher into a full-page reload — a reload mid-dump would drop
       // tagging state and thrash the tab. The client re-reads the manifest
       // explicitly after each write, so ignoring it here is free.
-      ignored: ['**/public/clips/**'],
+      ignored: ['**/public/clips/**', '**/.auto-tag/**'],
     },
   },
   // libraryPlugin is apply:'serve' and emits nothing into the production build.

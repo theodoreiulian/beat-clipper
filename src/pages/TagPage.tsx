@@ -13,8 +13,16 @@ import { primeMetronome, playClick } from '../lib/metronome'
 import { DropZone } from '../components/DropZone'
 import { ClipThumb } from '../components/ClipThumb'
 import { TrimBar, type TrimRange } from '../components/TrimBar'
+import { AutoTagPanel, AutoTagReview } from '../components/AutoTagPanel'
+import { useAutoTag } from '../lib/autoTagApi'
+import { BeatGridOverlay } from '../components/BeatGridOverlay'
 
 export function TagPage() {
+  const scanner = useAutoTag()
+  const [verified, setVerified] = useState(false)
+  const [bpmDraft, setBpmDraft] = useState('')
+  const dirtyGridRef = useRef(false)
+  const soundtrackAttemptsRef = useRef(new Set<string>())
   const [clips, setClips] = useState<Clip[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -22,6 +30,7 @@ export function TagPage() {
   // Default to hiding already-tagged clips so a fresh dump is the only thing in
   // front of you: you tag what you just added and never re-tap saved clips.
   const [untaggedOnly, setUntaggedOnly] = useState(true)
+  const [reviewOnly, setReviewOnly] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -33,6 +42,7 @@ export function TagPage() {
   // video's metadata (and therefore its duration) has loaded.
   const [trim, setTrim] = useState<TrimRange | null>(null)
   const [metronome, setMetronome] = useState(true)
+  const [showVideoGrid, setShowVideoGrid] = useState(true)
   // Hear the clip's own audio while tagging. Off by default (clips autoplay
   // muted); the preference persists as you move between clips.
   const [clipAudio, setClipAudio] = useState(false)
@@ -71,12 +81,25 @@ export function TagPage() {
 
   // The queue the operator actually walks: untagged-only by default.
   const visible = useMemo(
-    () => (untaggedOnly ? clips.filter((c) => c.bpm == null) : clips),
-    [clips, untaggedOnly],
+    () => (reviewOnly ? clips.filter(c => scanner.state?.proposals[c.id]?.state === 'pending') : untaggedOnly ? clips.filter((c) => c.bpm == null) : clips),
+    [clips, untaggedOnly, reviewOnly, scanner.state?.proposals],
   )
 
   const currentIndex = visible.findIndex((c) => c.id === selectedId)
   const currentClip = currentIndex >= 0 ? visible[currentIndex] : visible[0] ?? null
+
+  const proposal = currentClip ? scanner.state?.proposals[currentClip.id] ?? null : null
+  const pendingProposal = proposal?.state === 'pending' ? proposal : null
+
+  // Opening a clip checks its soundtrack automatically. One attempt per source
+  // window prevents silent clips (which create no audio proposal) from looping.
+  useEffect(() => {
+    if (!currentClip || !scanner.state?.ready || scanner.state.job?.status === 'running' || scanner.submitting || proposal?.result.version === 'beta-2') return
+    const key = JSON.stringify([currentClip.id, currentClip.trimStart, currentClip.trimEnd])
+    if (soundtrackAttemptsRef.current.has(key)) return
+    soundtrackAttemptsRef.current.add(key)
+    void scanner.action('/scan', { ids: [currentClip.id], audioOnly: true })
+  }, [currentClip?.id, currentClip?.trimStart, currentClip?.trimEnd, scanner.state?.ready, scanner.state?.job?.status, scanner.submitting, proposal?.result.version, scanner.action])
 
   // Keep the selection valid as the library / filter changes (e.g. after saving
   // a clip drops out of the untagged queue).
@@ -93,6 +116,8 @@ export function TagPage() {
   // grid/duration and force the video to reload.
   useEffect(() => {
     if (currentClip) {
+      dirtyGridRef.current = false
+      setVerified(false)
       setTaps([])
       // Show the saved grid (if any) so an already-tagged clip can be reviewed
       // and nudged without re-tapping from scratch.
@@ -109,6 +134,27 @@ export function TagPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentClip?.id])
+
+  // Never replace taps or nudges when a background scan finishes mid-edit.
+  useEffect(() => {
+    setVerified(false)
+    if (pendingProposal?.result.bpm != null && pendingProposal.result.offset != null && !dirtyGridRef.current) {
+      setGrid({ bpm: pendingProposal.result.bpm, offset: pendingProposal.result.offset })
+      if (pendingProposal.result.method === 'audio') setClipAudio(true)
+    }
+  }, [currentClip?.id, pendingProposal?.runId])
+
+  useEffect(() => { setVerified(false); setBpmDraft(grid ? String(grid.bpm) : '') }, [grid])
+
+  const useSuggestedGrid = (next: GridResult) => {
+    setShowVideoGrid(true)
+    dirtyGridRef.current = true
+    setTaps([])
+    setGrid(next)
+    setClipAudio(true)
+    primeMetronome()
+    setMetronome(true)
+  }
 
   // Drive the timeline playhead off the looping preview video, and click the
   // metronome each time the playhead crosses a grid beat.
@@ -152,7 +198,8 @@ export function TagPage() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === ' ' && document.activeElement?.tagName !== 'INPUT') {
+      if (e.repeat || (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, button, a, [contenteditable]'))) return
+      if (e.key === ' ') {
         e.preventDefault()
         handleTap()
       } else if (e.key === 'ArrowLeft') {
@@ -166,10 +213,11 @@ export function TagPage() {
   }, [selectOffset])
 
   const handleTap = useCallback(() => {
+    dirtyGridRef.current = true
     primeMetronome() // this tap is a user gesture, so it can unlock the metronome audio
     const now = videoRef.current ? videoRef.current.currentTime * 1000 : performance.now()
     setTaps((prev) => {
-      const newTaps = [...prev, now]
+      const newTaps = prev.length && now <= prev[prev.length - 1] ? [now] : [...prev, now]
       if (newTaps.length >= 2) {
         try {
           setGrid(calculateGrid(newTaps))
@@ -182,6 +230,7 @@ export function TagPage() {
   }, [])
 
   const handleShiftGrid = useCallback((delta: number) => {
+    dirtyGridRef.current = true
     setGrid((prev) => {
       if (!prev) return prev
       return shiftGrid(prev, delta)
@@ -189,6 +238,7 @@ export function TagPage() {
   }, [])
 
   const handleNudgeBpm = useCallback((delta: number) => {
+    dirtyGridRef.current = true
     setGrid((prev) => (prev ? nudgeBpm(prev, delta) : prev))
   }, [])
 
@@ -250,9 +300,18 @@ export function TagPage() {
     if (!currentClip || !hasGrid) return
     // Where to land after saving: the next clip still in the queue.
     const nextId = visible[currentIndex + 1]?.id ?? null
-    await patchClip(currentClip.id, { bpm: grid.bpm, offset: grid.offset })
-    await refresh()
-    if (nextId) setSelectedId(nextId)
+    setError(null)
+    try {
+      if (pendingProposal) {
+        if (!verified) return
+        const ok = await scanner.action(`/${encodeURIComponent(currentClip.id)}/approve`, { runId: pendingProposal.runId, bpm: grid.bpm, offset: grid.offset })
+        if (!ok) return
+      } else {
+        await patchClip(currentClip.id, { bpm: grid.bpm, offset: grid.offset })
+      }
+      await refresh()
+      if (nextId) setSelectedId(nextId)
+    } catch (e) { setError((e as Error).message) }
   }
 
   async function handleDelete() {
@@ -275,6 +334,7 @@ export function TagPage() {
     await refresh()
     // Focus the freshly added clips: show untagged and jump to the first upload.
     setUntaggedOnly(true)
+    setReviewOnly(false)
     if (uploaded[0]) setSelectedId(uploaded[0].id)
   }
 
@@ -284,9 +344,9 @@ export function TagPage() {
         <div>
           <h1 className="page__title">Clip library</h1>
           <p className="page__sub">
-            Drop clips to add them straight into the library. Tap each clip's dance tempo on the
-            pad (or press Space), then save its grid — it's written to the manifest on disk
-            automatically. Arrow keys move between clips.
+            Drop clips to add them to the library. Scan for a suggested dance tempo or tap it
+            yourself (Space). Watch and verify the grid before approving it for renders.
+            Arrow keys move between clips.
           </p>
         </div>
         <div className="page__head-actions">
@@ -306,6 +366,8 @@ export function TagPage() {
           {error}
         </p>
       )}
+
+      {clips.length > 0 && <AutoTagPanel scanner={scanner} clips={clips} current={currentClip} onReview={() => setReviewOnly(true)} />}
 
       {upload && (
         <div className="uploadbar reveal">
@@ -343,6 +405,7 @@ export function TagPage() {
                   autoPlay
                   loop
                   playsInline
+                  controls
                   key={currentClip.id}
                   onLoadedMetadata={(e) => {
                     const d = e.currentTarget.duration || 0
@@ -357,18 +420,20 @@ export function TagPage() {
                     setTrim({ start, end })
                   }}
                 />
+                {showVideoGrid && <BeatGridOverlay grid={grid} currentTime={playhead * clipDuration} soundtrack={pendingProposal?.result.method === 'audio' || pendingProposal?.result.method === 'audio-supported'} />}
               </div>
               <div className="stage__meta">
                 <span className="stage__name" title={currentClip.name}>
                   {currentClip.name}
                 </span>
                 <span className="stage__saved">
-                  {currentClip.bpm != null ? `saved ${Math.round(currentClip.bpm)} bpm` : 'untagged'}
+                  {currentClip.bpm != null ? `saved ${Math.round(currentClip.bpm)} bpm` : pendingProposal ? 'awaiting verification' : 'untagged'}
                 </span>
               </div>
             </div>
 
             <div className="rackpanel">
+              <AutoTagReview scanner={scanner} current={currentClip} proposal={pendingProposal} onUse={useSuggestedGrid} verified={verified} onVerified={setVerified} />
               <div className="rackpanel__row">
                 <span className="microlabel">Grid</span>
                 <div className="rackpanel__readout">
@@ -398,6 +463,7 @@ export function TagPage() {
                   type="button"
                   className="ctl ctl--quiet"
                   onClick={() => {
+                    dirtyGridRef.current = true
                     setTaps([])
                     setGrid(null)
                   }}
@@ -413,6 +479,20 @@ export function TagPage() {
                   <span className={`lamp${clipAudio ? ' lamp--on' : ''}`} />
                   Clip audio
                 </button>
+                <button type="button" className={`ctl${showVideoGrid ? ' ctl--engaged' : ''}`} onClick={() => setShowVideoGrid(v => !v)} aria-pressed={showVideoGrid}>Video grid</button>
+              </div>
+
+              <div className="rackpanel__row">
+                <label className="microlabel" htmlFor="tag-bpm">Set BPM</label>
+                <input id="tag-bpm" className="autotag__bpm-input" type="number" min="30" max="300" step="0.1" value={bpmDraft} placeholder="Tap or type" onChange={e => setBpmDraft(e.target.value)} onBlur={() => {
+                  const bpm = Number(bpmDraft)
+                  if (Number.isFinite(bpm) && bpm >= 30 && bpm <= 300) {
+                    if (bpm !== grid?.bpm) {
+                      dirtyGridRef.current = true
+                      setGrid({ bpm, offset: (grid?.offset ?? 0) % (60 / bpm) })
+                    }
+                  } else setBpmDraft(grid ? String(grid.bpm) : '')
+                }} />
               </div>
 
               {hasGrid && (
@@ -456,10 +536,10 @@ export function TagPage() {
                   <button
                     type="button"
                     className="ctl ctl--primary"
-                    disabled={!hasGrid}
+                    disabled={!hasGrid || scanner.submitting || (!!pendingProposal && !verified)}
                     onClick={handleSave}
                   >
-                    Save grid
+                    {pendingProposal ? 'Approve grid for rendering' : 'Save grid'}
                   </button>
                   <button type="button" className="ctl ctl--rec" onClick={handleDelete}>
                     Delete
@@ -517,7 +597,7 @@ export function TagPage() {
               <div className="timeline__head">
                 <span className="timeline__hint">
                   Watch the playhead cross each beat mark, then nudge the grid until the
-                  clicks land on the dancer's beats.
+                  clicks land on the music's beats (or the dancer's beats for a silent clip).
                 </span>
               </div>
               <div className="timeline__track">
@@ -535,9 +615,9 @@ export function TagPage() {
         </>
       ) : (
         <div className="complete">
-          <h2>{untaggedOnly ? 'Everything is tagged' : 'No clips'}</h2>
+          <h2>{reviewOnly ? 'No pending reviews' : untaggedOnly ? 'Everything is tagged' : 'No clips'}</h2>
           <p>
-            {untaggedOnly
+            {reviewOnly ? 'Scan unscanned clips to add suggestions to this queue, or switch off Review only below.' : untaggedOnly
               ? 'Drop more clips below to add to the library, or show all to review saved grids.'
               : 'Drop clips below to start building the library.'}
           </p>
@@ -554,13 +634,14 @@ export function TagPage() {
               <div className="strip__nav">
                 <button
                   type="button"
-                  className={`ctl${untaggedOnly ? ' ctl--engaged' : ''}`}
-                  onClick={() => setUntaggedOnly((v) => !v)}
+                  className={`ctl${untaggedOnly && !reviewOnly ? ' ctl--engaged' : ''}`}
+                  onClick={() => { setUntaggedOnly(v => reviewOnly ? true : !v); setReviewOnly(false) }}
                   title="Hide clips that already have a saved grid"
                 >
-                  <span className={`lamp${untaggedOnly ? ' lamp--on' : ''}`} />
+                  <span className={`lamp${untaggedOnly && !reviewOnly ? ' lamp--on' : ''}`} />
                   Untagged only
                 </button>
+                <button type="button" className={`ctl${reviewOnly ? ' ctl--engaged' : ''}`} onClick={() => setReviewOnly(v => !v)} aria-pressed={reviewOnly}>Review only</button>
                 <button
                   type="button"
                   className="ctl"
@@ -589,7 +670,7 @@ export function TagPage() {
                     type="button"
                     className={`strip__item${clip.id === currentClip?.id ? ' strip__item--current' : ''}`}
                     onClick={() => setSelectedId(clip.id)}
-                    title={clip.name}
+                    title={`${clip.name}${scanner.state?.proposals[clip.id]?.state === 'pending' ? ' · awaiting review' : ''}`}
                   >
                     <ClipThumb className="strip__thumb" src={clip.url} />
                     <span className={`lamp${clip.bpm != null ? ' lamp--on' : ''}`} />
