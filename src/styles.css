@@ -1597,3 +1597,35 @@ body {
     align-items: flex-start;
   }
 }
+
+/* Local beta scanner: suggestions remain visibly separate from saved grids. */
+.autotag { border: 1px solid var(--line); background: var(--surface); padding: 20px; margin: 24px 0; }
+.autotag__head, .autotag__job-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+.autotag h2 { font-size: 19px; margin: 0 0 8px; }
+.autotag h3 { font-size: 18px; margin: 0; }
+.autotag p { color: var(--ink-dim); line-height: 1.55; margin: 8px 0; max-width: 80ch; }
+.autotag__beta, .autotag__confidence { display: inline-block; font: 11px var(--font-mono); color: var(--signal); border: 1px solid var(--line-strong); padding: 4px 7px; vertical-align: middle; margin-left: 6px; }
+.autotag__confidence--low { color: var(--ink-dim); }
+.autotag__actions, .autotag__alternatives, .autotag__facts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.autotag__facts { font: 11px var(--font-mono); gap: 18px; color: var(--ink-dim); margin: 12px 0; }
+.autotag__alternatives { margin: 14px 0; }
+.autotag__job, .autotag__proposal, .autotag__benchmark { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+.autotag__job { font-size: 13px; }
+.autotag__job progress { display: block; width: 100%; height: 6px; margin: 12px 0; accent-color: var(--signal); }
+.autotag__filename { overflow-wrap: anywhere; font: 11px var(--font-mono); }
+.autotag__note { font-size: 12px; }
+.autotag__warnings { color: var(--ink-dim); font-size: 13px; line-height: 1.6; padding-left: 20px; }
+.autotag__verify { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.5; margin-top: 20px; cursor: pointer; }
+.autotag__verify input { margin-top: 4px; accent-color: var(--signal); }
+.autotag__error { color: var(--rec) !important; }
+.autotag__table-wrap { overflow-x: auto; }
+.autotag table { border-collapse: collapse; width: 100%; font: 12px var(--font-mono); }
+.autotag th, .autotag td { padding: 10px; text-align: left; border-bottom: 1px solid var(--line); }
+.autotag td:first-child { max-width: 260px; overflow-wrap: anywhere; }
+.autotag__bpm-input { width: 130px; padding: 8px 10px; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line-strong); font: 14px var(--font-mono); }
+.autotag summary { cursor: pointer; padding: 8px 0; }
+@media (max-width: 640px) { .autotag { padding: 14px; } .autotag__actions { width: 100%; } .autotag__verify { font-size: 13px; } }
+
+.autotag--review { margin: 0 0 18px; padding: 14px; }
+.autotag--review .autotag__proposal { margin: 0; padding: 0; border: 0; }
+.autotag--review h3 { font-size: 16px; }

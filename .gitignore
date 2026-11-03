@@ -18,3 +18,7 @@ public/clips/_trash
 /blob-report
 /playwright/.cache
 .playwright-mcp
+
+# Local beta auto-tag runtime, models, cached features and unapproved suggestions
+.auto-tag/
+__pycache__/

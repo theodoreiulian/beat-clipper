@@ -14,7 +14,11 @@
     "typecheck:tests": "tsc -p tests/tsconfig.json",
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:report": "playwright show-report"
+    "test:report": "playwright show-report",
+    "setup:auto-tag": "node scripts/setup-auto-tag.mjs",
+    "test:auto-tag": ".auto-tag/venv/bin/python -m unittest discover -s scripts/auto_tag -p \"test_*.py\"",
+    "benchmark:auto-tag": ".auto-tag/venv/bin/python scripts/auto_tag/benchmark.py",
+    "test:auto-tag:api": "node --experimental-strip-types --test tests/auto-tag-server.test.ts"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.10",
